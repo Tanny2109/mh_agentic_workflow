@@ -12,11 +12,14 @@ from smolagents import Tool
 
 class FalImageGenerationTool(Tool):
     """Tool for generating images using fal.ai models"""
-    
+
     name = "fal_image_generation"
     description = """
     Generates images using fal.ai models. Supports multiple models and parameters.
     Use this tool when the user wants to create or generate new images from text descriptions.
+
+    IMPORTANT: After calling this tool and receiving the generated image path, you MUST call final_answer()
+    with the image path to complete the task. Do NOT call this tool multiple times for the same request.
     """
     inputs = {
         "prompt": {
@@ -51,7 +54,8 @@ class FalImageGenerationTool(Tool):
         self.models = {
             "nano-banana": "fal-ai/nano-banana",
             "flux-schnell": "fal-ai/flux/schnell",
-            "flux-pro": "fal-ai/flux-pro"
+            "flux-pro": "fal-ai/flux-pro",
+            "flux-lora":"fal-ai/flux-lora",
         }
 
     def forward(
@@ -75,7 +79,7 @@ class FalImageGenerationTool(Tool):
             String describing the generated images and their paths
         """
         try:
-            model_id = self.models.get(model, self.models["nano-banana"])
+            model_id = self.models.get(model, self.models["flux-lora"])
 
             args = {
                 "prompt": prompt,
@@ -86,6 +90,8 @@ class FalImageGenerationTool(Tool):
 
             handler = fal_client.submit(model_id, arguments=args)
             result = handler.get()
+            print(f"Using model: {model_id}")
+            print(f"imagegen result: {result}")
 
             # Download and save images
             image_paths = []
@@ -116,6 +122,9 @@ class FalVideoGenerationTool(Tool):
     description = """
     Generates videos using fal.ai video models.
     Use this tool when the user wants to create videos or animations from text descriptions.
+
+    IMPORTANT: After calling this tool and receiving the generated video path, you MUST call final_answer()
+    with the video path to complete the task. Do NOT call this tool multiple times for the same request.
     """
     inputs = {
         "prompt": {
@@ -124,34 +133,42 @@ class FalVideoGenerationTool(Tool):
         },
         "duration": {
             "type": "integer",
-            "description": "Video duration in seconds (3-10). Default: 5",
+            "description": "Video duration in seconds (4-8). Default: 6",
             "nullable": True
         }
     }
     output_type = "string"
 
-    def forward(self, prompt: str, duration: int = 5) -> str:
+    def forward(self, prompt: str, duration: int = 6) -> str:
         """Generate video using fal.ai
-        
+
         Args:
             prompt: Text description of the video
             duration: Video duration in seconds (3-10)
-            
+
         Returns:
-            String with video URL or error message
+            String with local video file path or error message
         """
         try:
             args = {
                 "prompt": prompt,
-                "duration": min(max(duration, 3), 10)
+                "duration": min(max(duration, 6), 6)
             }
 
-            handler = fal_client.submit("fal-ai/luma-dream-machine", arguments=args)
+            handler = fal_client.submit("fal-ai/veo3/fast", arguments=args)
             result = handler.get()
+            print(result) 
 
             if "video" in result:
                 video_url = result["video"].get("url")
-                return f"Generated video: {video_url}"
+
+                # Download video to temp file
+                response = requests.get(video_url)
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                temp_file.write(response.content)
+                temp_file.close()
+
+                return f"Generated video saved to: {temp_file.name}"
 
             return f"Video generation completed: {str(result)}"
 
@@ -198,16 +215,18 @@ class FalImageEditTool(Tool):
         try:
             # Upload image to fal.ai
             with open(image_path, 'rb') as f:
-                image_url = fal_client.upload(f, "image/png")
+                image_data = f.read()
+            image_url = fal_client.upload(image_data, "image/png")
 
             args = {
-                "image_url": image_url,
+                "image_urls": [image_url],
                 "prompt": prompt,
                 "strength": strength
             }
 
-            handler = fal_client.submit("fal-ai/flux/dev/image-to-image", arguments=args)
+            handler = fal_client.submit("fal-ai/nano-banana/edit", arguments=args)
             result = handler.get()
+            print(f"Image editing result: {result}")
 
             if "images" in result and result["images"]:
                 edited_url = result["images"][0].get("url")

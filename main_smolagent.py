@@ -25,7 +25,7 @@ def main():
     print("🚀 Starting Fal.ai Smolagent Application...")
     app = SmolagentFalApp(
         hf_token=settings.HF_TOKEN,
-        model_id=settings.LLM_MODEL_ID
+        fal_model_name=settings.FAL_MODEL_NAME
     )
     
     gr.close_all()

@@ -16,7 +16,7 @@ class Settings:
     HF_TOKEN: Optional[str] = os.getenv("HF_TOKEN")
     
     # Model Configuration
-    LLM_MODEL_ID: str = "meta-llama/Llama-3.3-70B-Instruct"
+    FAL_MODEL_NAME: str = "google/gemini-2.5-flash"
     MAX_AGENT_STEPS: int = 10
     
     # UI Configuration
