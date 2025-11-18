@@ -69,7 +69,7 @@ class GradioInterface:
         yield history
 
         # Get response from assistant
-        imgs, text = self.assistant.process_message(prompt, history)
+        imgs, text, video = self.assistant.process_message(prompt, history)
 
         # Build assistant response content
         content = []
@@ -85,6 +85,11 @@ class GradioInterface:
                     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
                     img.save(temp_file.name)
                     content.append({"path": temp_file.name, "mime_type": "image/png"})
+        
+        # Add video if present
+        if video:
+            content.append({"path": video, "mime_type": "video/mp4"})
+            
 
         # Add assistant message to history
         if content:

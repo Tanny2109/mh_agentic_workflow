@@ -15,14 +15,15 @@ from ..tools.fal_tools import (
     FalVideoGenerationTool,
     FalImageEditTool
 )
+from config.model_config import model_config
 
 
 class SmolagentFalApp:
     """Smolagents-based application for fal.ai workflow with streaming support"""
-    
+
     def __init__(self, hf_token: str, fal_model_name="google/gemini-2.5-flash"):
         """Initialize the smolagent application
-        
+
         Args:
             hf_token: Hugging Face API token
             model_id: LLM model identifier
@@ -37,10 +38,27 @@ class SmolagentFalApp:
         # Initialize agent with Hugging Face model
         self.model = FalAIModel(fal_model_name=fal_model_name)
 
+        # Define system prompt for the agent
+        self.system_prompt = """You are an intelligent assistant that helps users with image generation, image editing, and video creation using fal.ai models.
+
+Your capabilities:
+- Generate images using various models (nano-banana, flux-schnell, flux-pro)
+- Create videos from text descriptions
+- Edit and transform images based on user requests
+
+When responding:
+1. Analyze the user's request carefully
+2. Choose the appropriate tool and parameters
+3. Execute the task efficiently
+4. Provide clear, helpful responses
+
+Always aim to understand user intent and deliver high-quality results."""
+
         self.agent = CodeAgent(
             tools=self.tools,
             model=self.model,
             max_steps=10,
+            # system_prompt=self.system_prompt,
         )
 
     def parse_image_paths(self, text: str) -> List[str]:
@@ -78,8 +96,8 @@ class SmolagentFalApp:
         Returns:
             Formatted conversation context string
         """
-        # Get last few exchanges for context (last 4 messages = 2 exchanges)
-        recent_history = history[-5:-1] if len(history) > 1 else []
+        # Get last few exchanges for context ENTIRE HISTORY!!!!!
+        recent_history = history if len(history) > 1 else []
 
         context_parts = []
         if recent_history:
@@ -143,7 +161,7 @@ class SmolagentFalApp:
 
             # Run agent step by step with streaming
             print(f"\n{'='*80}")
-            print(f"DEBUG - Running agent with context: {conversation_context[:200]}...")
+            print(f"DEBUG - Running agent with context: {conversation_context}...")
             print(f"{'='*80}\n")
 
             try:
@@ -212,7 +230,7 @@ class SmolagentFalApp:
                                 output_preview += "..."
                             thinking_content += f"   `{output_preview}`\n"
 
-                        thinking_content += "\n"
+                        thinking_content += "\n2"
 
                     # Track new step start time
                     if current_step_count > last_step_count:
@@ -264,27 +282,42 @@ class SmolagentFalApp:
             # Extract tool outputs from memory steps
             tool_outputs = []
             for idx, step in enumerate(self.agent.memory.steps):
+                print(f"\n{'='*80}")
                 print(f"DEBUG - Examining step {idx}: {type(step).__name__}")
+                print(f"{'='*80}")
+
+                # Check tool_calls - THIS IS WHAT CODEAGENT SENT TO THE TOOLS
+                if hasattr(step, 'tool_calls') and step.tool_calls:
+                    print(f"\nDEBUG - 📤 CODEAGENT TOOL CALLS (what CodeAgent is sending):")
+                    for tool_idx, tool_call in enumerate(step.tool_calls):
+                        print(f"\n  DEBUG - Tool Call #{tool_idx + 1}:")
+                        print(f"    DEBUG - Tool Name: {getattr(tool_call, 'name', 'N/A')}")
+                        if hasattr(tool_call, 'arguments'):
+                            print(f"    DEBUG - Arguments sent by CodeAgent:")
+                            import json
+                            try:
+                                args_dict = tool_call.arguments if isinstance(tool_call.arguments, dict) else {}
+                                print(json.dumps(args_dict, indent=6))
+                            except:
+                                print(f"      DEBUG - {tool_call.arguments}")
+                        print(f"")
 
                 # Check action_output
                 if hasattr(step, 'action_output'):
                     action_output = step.action_output
-                    print(f"DEBUG - Step {idx} action_output: {action_output}")
+                    print(f"DEBUG - 📥 TOOL RESPONSE (what tool returned): {action_output}")
                     if action_output and "Generated" in str(action_output) and ".png" in str(action_output):
                         tool_outputs.append(str(action_output))
-                        print(f"DEBUG - Added action_output to tool_outputs: {action_output}")
+                        print(f"DEBUG - ✅ Added to tool_outputs")
 
                 # Check observations
                 if hasattr(step, 'observations'):
                     observations = step.observations
-                    print(f"DEBUG - Step {idx} observations: {observations}")
+                    print(f"DEBUG - 👁️  OBSERVATIONS: {observations}")
                     if observations and "Generated" in str(observations) and ".png" in str(observations):
                         tool_outputs.append(str(observations))
-                        print(f"DEBUG - Added observations to tool_outputs: {observations}")
 
-                # Check tool_calls for debugging
-                if hasattr(step, 'tool_calls'):
-                    print(f"DEBUG - Step {idx} tool_calls: {step.tool_calls}")
+                print(f"{'='*80}\n")
 
             # Use tool outputs if available, otherwise use agent_output
             # Combine all tool outputs to get complete result
@@ -334,20 +367,6 @@ class SmolagentFalApp:
         """
 
         with gr.Blocks(css=custom_css, title="Fal.ai Agent") as demo:
-            gr.Markdown("""
-            # 🤖 Fal.ai Agentic Workflow with Smolagents
-
-            This agent can:
-            - 🎨 Generate images using fal.ai models (nano-banana, flux-schnell, flux-pro)
-            - 🎬 Create videos with text descriptions
-            - ✏️ Edit and transform uploaded images
-            - 💭 Stream thinking process and results
-
-            **Examples:**
-            - "Generate 2 images of a sunset over mountains using flux-pro"
-            - "Create a 5-second video of a cat playing with yarn"
-            - "Make the image more colorful and vibrant"
-            """)
 
             chatbot = gr.Chatbot(
                 type="messages",
@@ -365,6 +384,16 @@ class SmolagentFalApp:
 
             submit_btn = gr.Button("Send", variant="primary")
 
+            # Performance mode selector
+            with gr.Row():
+                mode_selector = gr.Radio(
+                    label="Performance Mode",
+                    choices=["fast", "pro"],
+                    value="fast",
+                    info="Fast: Uses quickest models. Pro: Uses highest quality models.",
+                    interactive=True
+                )
+
             # Examples
             gr.Examples(
                 examples=[
@@ -375,31 +404,35 @@ class SmolagentFalApp:
                 inputs=chat_input
             )
 
-            # Advanced settings
-            with gr.Accordion("📊 Agent Info", open=False):
-                gr.Markdown("""
-                **Available Tools:**
-                - `fal_image_generation`: Generate images using fal.ai models
-                - `fal_video_generation`: Create videos from text
-                - `fal_image_edit`: Edit and transform images
+            # # Advanced settings
+            # with gr.Accordion("📊 Agent Info", open=False):
+            #     gr.Markdown("""
+            #     **Available Tools:**
+            #     - `fal_image_generation`: Generate images using fal.ai models
+            #     - `fal_video_generation`: Create videos from text
+            #     - `fal_image_edit`: Edit and transform images
 
-                **How it works:**
-                1. Agent analyzes your request
-                2. Selects appropriate fal.ai tool and parameters
-                3. Executes the tool
-                4. Returns results with images/videos inline
+            #     **How it works:**
+            #     1. Agent analyzes your request
+            #     2. Selects appropriate fal.ai tool and parameters
+            #     3. Executes the tool
+            #     4. Returns results with images/videos inline
 
-                **Supported Models:**
-                - nano-banana (fast, high quality)
-                - flux-schnell (fast)
-                - flux-pro (highest quality)
-                """)
+            #     **Supported Models:**
+            #     - nano-banana (fast, high quality)
+            #     - flux-schnell (fast)
+            #     - flux-pro (highest quality)
+            #     """)
 
-            def handle_input(message: Dict[str, Any], history: List[Dict[str, Any]]):
+            def handle_input(message: Dict[str, Any], history: List[Dict[str, Any]], mode: str):
                 """Handle both text and file inputs"""
                 text_input = message.get("text", "")
+
                 files = message.get("files", [])
 
+                perf_mode = mode or "fast"
+
+                text_input = f"{text_input}\n\n[Performance mode: {perf_mode}]"
                 # If file uploaded, add to message
                 if files:
                     file_path = files[0] if isinstance(files, list) else files
@@ -409,20 +442,19 @@ class SmolagentFalApp:
                 for updated_history in self.stream_agent_response(text_input, history):
                     yield updated_history, None  # Clear input after submission
 
-            # Connect both submit and button click
+            # Connect submit and button click
             submit_events = [
                 chat_input.submit(
                     handle_input,
-                    inputs=[chat_input, chatbot],
+                    inputs=[chat_input, chatbot, mode_selector],
                     outputs=[chatbot, chat_input]
                 ),
                 submit_btn.click(
                     handle_input,
-                    inputs=[chat_input, chatbot],
+                    inputs=[chat_input, chatbot, mode_selector],
                     outputs=[chatbot, chat_input]
                 )
             ]
-
             # Add loading state to button and input
             for event in submit_events:
                 event.then(

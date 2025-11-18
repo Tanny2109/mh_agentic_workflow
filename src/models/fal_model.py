@@ -18,6 +18,7 @@ from smolagents.models import (
 )
 from smolagents.monitoring import TokenUsage
 from smolagents.tools import Tool
+from config.settings import settings
 
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ class FalAIModel(Model):
         # Clean and standardize messages
         clean_messages = get_clean_message_list(messages)
 
-        system_prompt = None
+        system_prompt = settings.AGENT_INFO
         user_messages = []
 
         for msg in clean_messages:
@@ -183,11 +184,10 @@ class FalAIModel(Model):
             # Extract response
             output_text = result.get("output", "")
 
-            # Note: fal.ai doesn't provide token usage info in response
-            # We'll estimate or leave it as None
+
             token_usage = None
 
-            logger.debug(f"Received response from fal.ai: {output_text[:100]}...")
+            logger.debug(f"Received response from fal.ai: {output_text}...")
 
             return ChatMessage(
                 role=MessageRole.ASSISTANT,
@@ -245,8 +245,8 @@ class FalAIModel(Model):
         try:
             # Call fal.ai API using stream
             stream = fal_client.stream(
-                self.model_id,
-                arguments={"input": fal_input}
+                self.fal_api,
+                arguments=fal_input
             )
 
             # Track tokens (approximate since fal.ai doesn't provide this)
