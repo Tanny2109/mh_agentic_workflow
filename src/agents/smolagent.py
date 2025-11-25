@@ -15,6 +15,7 @@ from ..tools.fal_tools import (
     FalVideoGenerationTool,
     FalImageEditTool
 )
+from src.core.utils import stream_from_smolagent
 from config.model_config import model_config
 
 
@@ -61,297 +62,199 @@ Always aim to understand user intent and deliver high-quality results."""
             # system_prompt=self.system_prompt,
         )
 
-    def parse_image_paths(self, text: str) -> List[str]:
-        """Extract image paths from agent output
-
-        Args:
-            text: Agent output text
-
-        Returns:
-            List of image file paths found in text
-        """
-        pattern = r'(/[^\s]+\.(?:png|jpg|jpeg))'
-        matches = re.findall(pattern, text)
-        return matches
-
-    def parse_video_paths(self, text: str) -> List[str]:
-        """Extract video paths from agent output
-
-        Args:
-            text: Agent output text
-
-        Returns:
-            List of video file paths found in text
-        """
-        pattern = r'(/[^\s]+\.(?:mp4|mov|avi|webm))'
-        matches = re.findall(pattern, text)
-        return matches
-
     def _build_context_from_history(self, history: List[Dict[str, Any]]) -> str:
         """Build conversation context from chat history
-
+        
         Args:
-            history: Chat history
-
+            history: List of message dictionaries
+            
         Returns:
             Formatted conversation context string
         """
-        # Get last few exchanges for context ENTIRE HISTORY!!!!!
+        # Get last few exchanges for context
         recent_history = history if len(history) > 1 else []
-
+        
         context_parts = []
         if recent_history:
             context_parts.append("Previous conversation:")
             for msg in recent_history:
                 role = msg.get("role", "unknown")
                 content = msg.get("content", "")
-                # Extract text from content if it's a dict/list
+                
+                # Skip media-only messages (dict content is for images/videos)
                 if isinstance(content, dict):
-                    content = content.get("text", str(content))
+                    # This is a media file, skip it in text context
+                    continue
                 elif isinstance(content, list):
                     text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and "text" in c]
-                    content = " ".join(text_parts) if text_parts else str(content)
-                context_parts.append(f"{role.capitalize()}: {content}")
-
-        # Add current user message
+                    content = " ".join(text_parts) if text_parts else ""
+                    if not content.strip():
+                        continue
+                
+                # Only add if we have actual text content
+                if isinstance(content, str) and content.strip():
+                    context_parts.append(f"{role.capitalize()}: {content}")
+        
+        # Add current user message (which should always be text from the user)
         current_msg = history[-1].get("content", "") if history else ""
-        if isinstance(current_msg, str):
+        if isinstance(current_msg, str) and current_msg.strip():
             context_parts.append(f"\nCurrent request: {current_msg}")
-        else:
-            context_parts.append(f"\nCurrent request: {current_msg}")
-
+            
         return "\n".join(context_parts)
 
     def stream_agent_response(
-        self, user_message: str, history: List[Dict[str, Any]]
+        self, user_message: str, history: List[Dict[str, Any]], agent_prompt: str = None
     ) -> Generator[List[Dict[str, Any]], None, None]:
         """Stream agent thinking and results to Gradio chatbot
-
+        
         Args:
-            user_message: User's input message
+            user_message: User's input message (for display)
             history: Chat history
-
+            agent_prompt: Full prompt with settings (for agent). If None, uses user_message.
+            
         Yields:
             Updated chat history with agent responses
         """
+        import threading
+        import time
+        from src.core.utils import parse_image_paths, parse_video_paths
+
         try:
-            # Add user message to history
+            # Use agent_prompt if provided, otherwise user_message
+            actual_prompt = agent_prompt if agent_prompt is not None else user_message
+
+            # Add user message to history (display version)
             history = history or []
             history.append({"role": "user", "content": user_message})
             yield history
-
-            # Clear previous logs
-            self.agent.logs = []
-
-            # Build conversation context from history (BEFORE adding thinking message)
-            conversation_context = self._build_context_from_history(history)
-
-            # Stream thinking process (AFTER building context)
-            thinking_msg = {
+            
+            # Build conversation context (using history which now has the clean user message)
+            # Note: We might want to inject the settings into the context if they aren't in history.
+            # But _build_context_from_history just takes the history.
+            # So we should probably append the actual_prompt to the context manually or 
+            # temporarily add it to history? 
+            # Actually, CodeAgent.run() takes the prompt string. 
+            # But here we are passing 'conversation_context' to agent.run().
+            # Let's reconstruct the context to include the system settings for this turn.
+            
+            conversation_context = self._build_context_from_history(history[:-1]) # All history except last
+            conversation_context += f"\nCurrent request: {actual_prompt}"
+            
+            # Add placeholder for assistant response
+            history.append({
                 "role": "assistant",
-                "content": "🤔 Analyzing your request..."
-            }
-            history.append(thinking_msg)
+                "content": "Analyzing request..."
+            })
             yield history
 
-            # Track steps for streaming updates
-            last_step_count = 0
-            step_start_times = {}
-            total_start_time = None
+            # Variables to store agent result
+            agent_output = None
+            agent_error = None
+            
+            def run_agent():
+                nonlocal agent_output, agent_error
+                try:
+                    agent_output = self.agent.run(conversation_context)
+                except Exception as e:
+                    agent_error = e
 
-            # Run agent step by step with streaming
-            print(f"\n{'='*80}")
-            print(f"DEBUG - Running agent with context: {conversation_context}...")
-            print(f"{'='*80}\n")
+            # Start agent in background thread
+            start_time = time.time()
+            agent_thread = threading.Thread(target=run_agent)
+            agent_thread.start()
+            
+            # Spinner animation frames
+            spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            spinner_idx = 0
+            
+            # Loop while agent is running to update UI
+            while agent_thread.is_alive():
+                elapsed = time.time() - start_time
+                spinner = spinner_frames[spinner_idx % len(spinner_frames)]
+                spinner_idx += 1
+                
+                # Update the last message with loading UI
+                loading_html = (
+                    f'<div style="display: flex; align-items: center; gap: 10px;">'
+                    f'<span style="font-size: 1.2em;">{spinner}</span>'
+                    f'<span>Generating content...</span>'
+                    f'<span style="color: #888; font-family: monospace;">({elapsed:.1f}s)</span>'
+                    f'</div>'
+                )
+                
+                history[-1]["content"] = loading_html
+                yield history
+                
+                time.sleep(0.1)
+                
+            # Wait for thread to ensure we have the result
+            agent_thread.join()
+            total_time = time.time() - start_time
+            
+            if agent_error:
+                raise agent_error
+                
+            # Process final result
+            output_text = str(agent_output)
+            image_paths = parse_image_paths(output_text)
+            video_paths = parse_video_paths(output_text)
+            
+            # Clean text content
+            clean_text = output_text.strip()
+            
+            # DON'T remove the paths - the agent needs them to reference images later!
+            # Instead, we'll keep them but format them differently for display
+            
+            # Remove hallucinated URLs (fal.ai web page links that aren't actual image URLs)
+            # These are URLs that don't end in valid image/video extensions
+            import re
+            # Match URLs but NOT ones ending in valid extensions
+            hallucinated_url_pattern = r'https?://[^\s]+(?<!\.png)(?<!\.jpg)(?<!\.jpeg)(?<!\.webp)(?<!\.mp4)(?<!\.mov)(?<!\.avi)(?<!\.webm)'
+            clean_text = re.sub(hallucinated_url_pattern, '', clean_text)
+            
+            # Format the output: wrap file paths in hidden span for better UX
+            # but keep them in the text for agent context
+            for path in image_paths + video_paths:
+                # Replace paths with hidden version (small grey text)
+                clean_text = clean_text.replace(
+                    path,
+                    f'<span style="color: #999; font-size: 0.7em;">{path}</span>'
+                )
+            
+            final_text_content = ""
+            
+            # Always show the text if we have it (agent needs this context!)
+            if clean_text.strip():
+                final_text_content = clean_text
 
-            try:
-                import threading
-                import time
-
-                agent_output = None
-                agent_error = None
-
-                def run_agent():
-                    nonlocal agent_output, agent_error
-                    try:
-                        agent_output = self.agent.run(conversation_context)
-                    except Exception as e:
-                        agent_error = e
-
-                # Start agent in background thread
-                agent_thread = threading.Thread(target=run_agent)
-                agent_thread.start()
-                total_start_time = time.time()
-
-                # Spinner frames for animation
-                spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                spinner_idx = 0
-
-                # Stream updates while agent is running
-                while agent_thread.is_alive():
-                    # Check if there are new logs or steps
-                    current_step_count = len(self.agent.memory.steps)
-                    elapsed_time = time.time() - total_start_time
-
-                    # Update spinner
-                    spinner = spinner_frames[spinner_idx % len(spinner_frames)]
-                    spinner_idx += 1
-
-                    # Build thinking content from current state
-                    thinking_content = f"{spinner} **Processing...**\n\n"
-
-                    # Show elapsed time
-                    thinking_content += f"⏱️ *Elapsed: {elapsed_time:.1f}s*\n\n"
-
-                    # Show completed steps with timing
-                    for idx, step in enumerate(self.agent.memory.steps):
-                        step_time = step_start_times.get(idx, 0)
-                        thinking_content += f"**Step {idx + 1}** *(took {step_time:.1f}s)*\n"
-
-                        # Show what tool was used
-                        if hasattr(step, 'tool_calls') and step.tool_calls:
-                            for tool_call in step.tool_calls:
-                                if hasattr(tool_call, 'arguments'):
-                                    args = str(tool_call.arguments)
-                                    # Detect what's happening
-                                    if 'fal_image_generation' in args:
-                                        thinking_content += f"   🎨 Generating image...\n"
-                                    elif 'fal_image_edit' in args:
-                                        thinking_content += f"   ✏️ Editing image...\n"
-                                    elif 'fal_video_generation' in args:
-                                        thinking_content += f"   🎬 Generating video...\n"
-                                    elif 'final_answer' in args:
-                                        thinking_content += f"   ✨ Finalizing...\n"
-
-                        # Show result preview
-                        if hasattr(step, 'action_output'):
-                            output_preview = str(step.action_output)[:80]
-                            if len(str(step.action_output)) > 80:
-                                output_preview += "..."
-                            thinking_content += f"   `{output_preview}`\n"
-
-                        thinking_content += "\n2"
-
-                    # Track new step start time
-                    if current_step_count > last_step_count:
-                        step_start_times[last_step_count] = time.time() - total_start_time
-                        if last_step_count > 0:
-                            # Calculate time for previous step
-                            prev_step_time = step_start_times[last_step_count] - step_start_times.get(last_step_count - 1, 0)
-                            step_start_times[last_step_count - 1] = prev_step_time
-
-                    # Show current activity with spinner
-                    if current_step_count < self.agent.max_steps:
-                        thinking_content += f"\n{spinner} **Step {current_step_count + 1}** in progress...\n"
-
-                        # Estimate time remaining (rough estimate)
-                        if current_step_count > 0:
-                            avg_step_time = elapsed_time / current_step_count
-                            estimated_remaining = avg_step_time * (self.agent.max_steps - current_step_count)
-                            thinking_content += f"   *Estimated remaining: ~{estimated_remaining:.0f}s*\n"
-
-                    history[-1]["content"] = thinking_content
-                    yield history
-                    last_step_count = current_step_count
-
-                    time.sleep(0.3)  # Poll every 300ms for updates
-
-                # Wait for thread to complete
-                agent_thread.join()
-
-                # Calculate final step time
-                if last_step_count > 0 and last_step_count not in step_start_times:
-                    step_start_times[last_step_count] = time.time() - total_start_time - step_start_times.get(last_step_count - 1, 0)
-
-                if agent_error:
-                    raise agent_error
-
-                print(f"\n{'='*80}")
-                print(f"DEBUG - Agent run completed successfully")
-                print(f"DEBUG - Agent output: {agent_output}")
-                print(f"DEBUG - Agent output type: {type(agent_output)}")
-                print(f"DEBUG - Agent memory steps: {len(self.agent.memory.steps)}")
-                print(f"{'='*80}\n")
-
-            except Exception as e:
-                print(f"\n{'='*80}")
-                print(f"ERROR - Agent run failed: {e}")
-                print(f"{'='*80}\n")
-                raise
-
-            # Extract tool outputs from memory steps
-            tool_outputs = []
-            for idx, step in enumerate(self.agent.memory.steps):
-                print(f"\n{'='*80}")
-                print(f"DEBUG - Examining step {idx}: {type(step).__name__}")
-                print(f"{'='*80}")
-
-                # Check tool_calls - THIS IS WHAT CODEAGENT SENT TO THE TOOLS
-                if hasattr(step, 'tool_calls') and step.tool_calls:
-                    print(f"\nDEBUG - 📤 CODEAGENT TOOL CALLS (what CodeAgent is sending):")
-                    for tool_idx, tool_call in enumerate(step.tool_calls):
-                        print(f"\n  DEBUG - Tool Call #{tool_idx + 1}:")
-                        print(f"    DEBUG - Tool Name: {getattr(tool_call, 'name', 'N/A')}")
-                        if hasattr(tool_call, 'arguments'):
-                            print(f"    DEBUG - Arguments sent by CodeAgent:")
-                            import json
-                            try:
-                                args_dict = tool_call.arguments if isinstance(tool_call.arguments, dict) else {}
-                                print(json.dumps(args_dict, indent=6))
-                            except:
-                                print(f"      DEBUG - {tool_call.arguments}")
-                        print(f"")
-
-                # Check action_output
-                if hasattr(step, 'action_output'):
-                    action_output = step.action_output
-                    print(f"DEBUG - 📥 TOOL RESPONSE (what tool returned): {action_output}")
-                    if action_output and "Generated" in str(action_output) and ".png" in str(action_output):
-                        tool_outputs.append(str(action_output))
-                        print(f"DEBUG - ✅ Added to tool_outputs")
-
-                # Check observations
-                if hasattr(step, 'observations'):
-                    observations = step.observations
-                    print(f"DEBUG - 👁️  OBSERVATIONS: {observations}")
-                    if observations and "Generated" in str(observations) and ".png" in str(observations):
-                        tool_outputs.append(str(observations))
-
-                print(f"{'='*80}\n")
-
-            # Use tool outputs if available, otherwise use agent_output
-            # Combine all tool outputs to get complete result
-            combined_output = "\n".join(tool_outputs) if tool_outputs else str(agent_output)
-            print(f"DEBUG - Combined output for parsing: {combined_output}")
-
-            # Parse for media files (images and videos) from the combined tool outputs
-            '''
-            So when we generate more than one image, this gets tricky. agent output is somehow dependent on how i add history. if i make multiple
-            additions to history by looping through images, I dont get any images, but when i restrict it to one image and adding this to
-            ChatMessage, this gets displayed. Maybe some thing to do with gradio. Ill look into this later on.
-            '''
-            image_paths = self.parse_image_paths(combined_output)
-            video_paths = self.parse_video_paths(combined_output)
-
-            if image_paths:
-                # Display image
-                history[-1]["content"] = {
-                    "path": image_paths[0]
-                }
-            elif video_paths:
-                # Display video
-                history[-1]["content"] = {
-                    "path": video_paths[0]
-                }
+            # Add execution time to text
+            if final_text_content:
+                final_text_content += f"\n<div style='color: #999; font-size: 0.8em; margin-top: 10px; text-align: right;'>Generated in {total_time:.2f}s</div>"
             else:
-                # No media files, just text
-                history[-1]["content"] = f"**Agent Response:**\n\n{agent_output}"
-
+                final_text_content = f"<div style='color: #999; font-size: 0.8em; margin-top: 10px; text-align: right;'>Generated in {total_time:.2f}s</div>"
+            
+            # Update the loading message with the text content
+            history[-1]["content"] = final_text_content
+            
+            # Append images as new messages
+            for img in image_paths:
+                history.append({
+                    "role": "assistant",
+                    "content": {"path": img}
+                })
+                
+            # Append videos as new messages
+            for vid in video_paths:
+                history.append({
+                    "role": "assistant",
+                    "content": {"path": vid}
+                })
+            
             yield history
-
+                
         except Exception as e:
             error_msg = f"❌ Error: {str(e)}\n\nPlease try rephrasing your request."
-            history.append({"role": "assistant", "content": error_msg})
+            history[-1]["content"] = error_msg
             yield history
 
     def create_interface(self) -> gr.Blocks:
@@ -393,6 +296,37 @@ Always aim to understand user intent and deliver high-quality results."""
                     info="Fast: Uses quickest models. Pro: Uses highest quality models.",
                     interactive=True
                 )
+            
+            # Advanced settings
+            with gr.Accordion("⚙️ Advanced Settings", open=False):
+                with gr.Row():
+                    aspect_ratio = gr.Dropdown(
+                        label="Aspect Ratio",
+                        choices=["square", "landscape_4_3", "landscape_16_9", "portrait_3_4", "portrait_9_16"],
+                        value="square",
+                        info="Target aspect ratio for generated images"
+                    )
+                    num_inference_steps = gr.Slider(
+                        label="Inference Steps",
+                        minimum=1,
+                        maximum=50,
+                        value=4,
+                        step=1,
+                        info="More steps = higher quality but slower"
+                    )
+                
+                with gr.Row():
+                    negative_prompt = gr.Textbox(
+                        label="Negative Prompt",
+                        placeholder="blurry, low quality, ugly, deformed...",
+                        info="What to avoid in the generation"
+                    )
+                    seed = gr.Number(
+                        label="Seed",
+                        value=-1,
+                        precision=0,
+                        info="Set a specific seed for reproducibility (-1 for random)"
+                    )
 
             # Examples
             gr.Examples(
@@ -404,54 +338,63 @@ Always aim to understand user intent and deliver high-quality results."""
                 inputs=chat_input
             )
 
-            # # Advanced settings
-            # with gr.Accordion("📊 Agent Info", open=False):
-            #     gr.Markdown("""
-            #     **Available Tools:**
-            #     - `fal_image_generation`: Generate images using fal.ai models
-            #     - `fal_video_generation`: Create videos from text
-            #     - `fal_image_edit`: Edit and transform images
-
-            #     **How it works:**
-            #     1. Agent analyzes your request
-            #     2. Selects appropriate fal.ai tool and parameters
-            #     3. Executes the tool
-            #     4. Returns results with images/videos inline
-
-            #     **Supported Models:**
-            #     - nano-banana (fast, high quality)
-            #     - flux-schnell (fast)
-            #     - flux-pro (highest quality)
-            #     """)
-
-            def handle_input(message: Dict[str, Any], history: List[Dict[str, Any]], mode: str):
-                """Handle both text and file inputs"""
+            def handle_input(
+                message: Dict[str, Any], 
+                history: List[Dict[str, Any]], 
+                mode: str,
+                ar: str,
+                steps: int,
+                neg_prompt: str,
+                seed_val: int
+            ):
+                """Handle both text and file inputs with advanced settings"""
                 text_input = message.get("text", "")
-
                 files = message.get("files", [])
-
                 perf_mode = mode or "fast"
 
-                text_input = f"{text_input}\n\n[Performance mode: {perf_mode}]"
+                # Construct detailed prompt with settings
+                full_prompt = f"{text_input}\n\n[System Settings]"
+                full_prompt += f"\nPerformance Mode: {perf_mode}"
+                full_prompt += f"\nAspect Ratio: {ar}"
+                full_prompt += f"\nInference Steps: {steps}"
+                if neg_prompt:
+                    full_prompt += f"\nNegative Prompt: {neg_prompt}"
+                if seed_val != -1:
+                    full_prompt += f"\nSeed: {seed_val}"
+
                 # If file uploaded, add to message
                 if files:
                     file_path = files[0] if isinstance(files, list) else files
-                    text_input = f"{text_input}\n\nUploaded file: {file_path}"
+                    full_prompt += f"\n\nUploaded file: {file_path}"
+                    # Also append to text input for display if needed, or just rely on Gradio showing the file
+                    # But for the agent prompt, we need it in text.
 
                 # Stream response
-                for updated_history in self.stream_agent_response(text_input, history):
+                # Pass text_input as user_message (what user sees)
+                # Pass full_prompt as agent_prompt (what agent sees)
+                for updated_history in self.stream_agent_response(text_input, history, agent_prompt=full_prompt):
                     yield updated_history, None  # Clear input after submission
 
             # Connect submit and button click
+            input_components = [
+                chat_input, 
+                chatbot, 
+                mode_selector,
+                aspect_ratio,
+                num_inference_steps,
+                negative_prompt,
+                seed
+            ]
+            
             submit_events = [
                 chat_input.submit(
                     handle_input,
-                    inputs=[chat_input, chatbot, mode_selector],
+                    inputs=input_components,
                     outputs=[chatbot, chat_input]
                 ),
                 submit_btn.click(
                     handle_input,
-                    inputs=[chat_input, chatbot, mode_selector],
+                    inputs=input_components,
                     outputs=[chatbot, chat_input]
                 )
             ]

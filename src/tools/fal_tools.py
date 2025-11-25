@@ -11,6 +11,27 @@ import requests
 from PIL import Image
 from smolagents import Tool
 
+from requests.adapters import HTTPAdapter, Retry
+import os
+import requests
+import sys
+from dotenv import load_dotenv
+
+load_dotenv()
+
+prodia_token = os.getenv('PRODIA_KEY')
+prodia_url = 'https://inference.prodia.com/v2/job'
+
+session = requests.Session()
+retries = Retry(allowed_methods=None, status_forcelist=Retry.RETRY_AFTER_STATUS_CODES)
+session.mount('http://', HTTPAdapter(max_retries=retries))
+session.mount('https://', HTTPAdapter(max_retries=retries))
+session.headers.update({'Authorization': f"Bearer {prodia_token}"})
+
+headers = {
+    'Accept': "image/jpeg",
+    'Content-Type': 'application/json',
+}
 
 class FalImageGenerationTool(Tool):
     """Tool for generating images using fal.ai models"""
@@ -21,24 +42,26 @@ class FalImageGenerationTool(Tool):
     Use this tool when the user wants to create or generate new images from text descriptions. Select based on user intent and pro vs fast model
     based on that intent.
     
-    Anime: pro=seedream4, fast=seedream4
-    Cartoon and Illustrations: pro=imagen4_ultra, fast=seedream4
-    General and Photorealistic: pro=seedream4, fast=seedream4
-    Graphic Design and Digital Rendering: pro=seedream4, fast=seedream4
-    Traditional Art: pro=seedream4, fast=seedream4
-    Vintage and Retro: pro=seedream4, fast=seedream4
-    Commercial(ads, product shots): pro=imagen4_ultra, fast=imagen4_ultra
-    Fantasy and Mythical: pro=seedream4, fast=seedream4
-    Futuristic and Sci-Fi: pro=seedream4, fast=seedream4
-    Nature and Landscapes: pro=seedream4, fast=seedream4
-    People- Groups and Activities: pro=seedream4, fast=seedream4
-    People- Portraits: pro=seedream4, fast=seedream4
-    Physical Spaces: pro=seedream4, fast=seedream4
-    Text and Typography: pro=imagen4_ultra, fast=nano-banana
-    UI/UX: pro=imagen4_ultra, fast=nano-banana
+    Anime: pro=seedream4, fast=flux_krea
+    Cartoon and Illustrations: pro=imagen4_ultra, fast=flux_krea
+    General and Photorealistic: pro=seedream4, fast=flux_krea
+    Graphic Design and Digital Rendering: pro=seedream4, fast=flux_krea
+    Traditional Art: pro=seedream4, fast=flux_krea
+    Vintage and Retro: pro=seedream4, fast=flux_krea
+    Commercial(ads, product shots): pro=imagen4_ultra, fast=flux_krea
+    Fantasy and Mythical: pro=seedream4, fast=flux_krea
+    Futuristic and Sci-Fi: pro=seedream4, fast=flux_krea
+    Nature and Landscapes: pro=seedream4, fast=flux_krea
+    People- Groups and Activities: pro=seedream4, fast=flux_krea
+    People- Portraits: pro=seedream4, fast=flux_krea
+    Physical Spaces: pro=seedream4, fast=flux_krea
+    Text and Typography: pro=imagen4_ultra, fast=flux_krea
+    UI/UX: pro=imagen4_ultra, fast=flux_krea
 
-    IMPORTANT: After calling this tool and receiving the generated image path, you MUST call final_answer()
-    with the image path to complete the task. Do NOT call this tool multiple times for the same request.
+    CRITICAL: This tool returns LOCAL FILE PATHS (e.g., /var/folders/.../tmp*.png).
+    You MUST use these EXACT paths in final_answer(). 
+    DO NOT create or use any https:// URLs - they are not valid and will cause errors.
+    ONLY use the file paths returned by this tool.
     """
     inputs = {
         "prompt": {
@@ -47,7 +70,7 @@ class FalImageGenerationTool(Tool):
         },
         "model": {
             "type": "string",
-            "description": "model identifier (nano-banana, seedream4, imagen4_ultra). Default: seedream4",
+            "description": "model identifier (nano-banana, seedream4, imagen4_ultra, flux_krea). Default: flux_krea",
             "nullable": False
         },
         "mode":{
@@ -84,6 +107,8 @@ class FalImageGenerationTool(Tool):
             "nano-banana": "fal-ai/nano-banana",
             "seedream4": "fal-ai/bytedance/seedream/v4/text-to-image",
             "imagen4_ultra": "fal-ai/imagen4/preview/ultra",
+            "flux-krea": "fal-ai/flux/krea",
+            "flux-schnell": "fal-ai/flux/krea" # i dunno but agent refers to schnell instead of krea at time..
         }
 
     def forward(
@@ -109,54 +134,78 @@ class FalImageGenerationTool(Tool):
             String describing the generated images and their paths
         """
         try:
-            # Get model from config instead of parameter
-            model_id = self.models[model]
-
-            args = {
-                "prompt": prompt,
-                "image_size": {"width": width, "height": height},
-                "num_images": min(num_images, 4),
-            }
-
-            # Print debug info
-            debug_info = {
-                "tool": "FalImageGenerationTool",
-                "model": model_id,
-                "model_id": model_id,
-                "arguments": args
-            }
-            print(f"\n{'='*80}")
-            print(f"DEBUG - Image Generation Tool Called:")
-            print(json.dumps(debug_info, indent=2))
-            print(f"{'='*80}\n")
-
-            st = time()
-            handler = fal_client.submit(model_id, arguments=args)
-            result = handler.get()
-            et = time()
-            print(f"DEBUG - Image generation result: {result}")
-            print(f"DEBUG - Time taken for image generation: {et - st} seconds")
-
-            # Download and save images
             image_paths = []
-            if "images" in result:
-                for idx, img_data in enumerate(result["images"]):
-                    img_url = img_data.get("url")
-                    if img_url:
-                        response = requests.get(img_url)
-                        img = Image.open(BytesIO(response.content))
+            if model == "flux-schnell" or model == "flux_krea" or model == "flux-krea":
+                job = {
+                    "type": "inference.flux-fast.schnell.txt2img.v2",
+                    "config": {
+                        "prompt": prompt,
+                        "width": width,
+                        "height": height,
+                        "steps": 4
+                    }
+                }
+                st = time()
+                res = session.post(prodia_url, headers=headers, json=job)
+                et = time()
+                # print(f"Request ID: {res.headers.get('x-request-id')}")
+                # print(f"Status: {res.status_code}")
+                print(f"DEBUG - Time taken for image generation: {et - st} seconds")
+                # if res.status_code != 200:
+                #     print(res.text)
+                #     sys.exit(1)
+                img = Image.open(BytesIO(res.content))
+                # img = res.content
+                temp_file = tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".png"
+                )
+                img.save(temp_file.name)
+                image_paths.append(temp_file.name)
+            else:
+                # Get model from config
+                model_id = self.models.get(model)
 
-                        # Save to temp file
-                        temp_file = tempfile.NamedTemporaryFile(
-                            delete=False, suffix=".png"
-                        )
-                        img.save(temp_file.name)
-                        image_paths.append(temp_file.name)
+                args = {
+                    "prompt": prompt,
+                    "image_size": {"width": width, "height": height},
+                    "num_images": num_images,
+                }
+
+                # Print debug info
+                debug_info = {
+                    "tool": "FalImageGenerationTool",
+                    "model": model_id,
+                    "model_id": model_id,
+                    "arguments": args
+                }
+                print(f"\n{'='*80}")
+                print(f"DEBUG - Image Generation Tool Called:")
+                print(json.dumps(debug_info, indent=2))
+                print(f"{'='*80}\n")
+
+                st = time()
+                handler = fal_client.submit(model_id, arguments=args)
+                result = handler.get()
+                et = time()
+                print(f"DEBUG - Image generation result: {result}")
+                print(f"DEBUG - Time taken for image generation: {et - st} seconds")
+
+                # Download and save images
+                if "images" in result:
+                    for idx, img_data in enumerate(result["images"]):
+                        img_url = img_data.get("url")
+                        if img_url:
+                            response = requests.get(img_url)
+                            img = Image.open(BytesIO(response.content))
+
+                            # Save to temp file
+                            temp_file = tempfile.NamedTemporaryFile(
+                                delete=False, suffix=".png"
+                            )
+                            img.save(temp_file.name)
+                            image_paths.append(temp_file.name)
 
             return f"Generated {len(image_paths)} image(s): {', '.join(image_paths)}"
-
-            # # Return mock response for testing (uncomment API calls above when ready)
-            # return f"[MOCK] Would generate {num_images} image(s) using model '{model_id}' in {mode} mode with type {image_type}'"
 
         except Exception as e:
             return f"Error generating images: {str(e)}"
@@ -302,10 +351,10 @@ class FalImageEditTool(Tool):
         """
         try:
             # Get model from config
-            model_id = "fal-ai/nano-banana/edit" #13.2s
-            # model_id = "fal-ai/bytedance/seedream/v4/edit" #13.16s
+            # model_id = "fal-ai/nano-banana/edit" #13.2s
+            model_id = "fal-ai/bytedance/seedream/v4/edit" #13.16s
 
-            # Upload image to fal.ai
+            # Upload image to fal.ai (manual upload required)
             with open(image_path, 'rb') as f:
                 image_data = f.read()
             image_url = fal_client.upload(image_data, "image/png")
@@ -324,7 +373,7 @@ class FalImageEditTool(Tool):
                 "model_id": model_id,
                 "arguments": {
                     "prompt": prompt,
-                    "image_url": image_url[:50] + "..."  # Truncate for readability
+                    "image_url": image_url[:50] + "..."
                 }
             }
             print(f"\n{'='*80}")

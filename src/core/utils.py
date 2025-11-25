@@ -10,17 +10,53 @@ from smolagents import CodeAgent
 
 
 def parse_image_paths(text: str) -> list[str]:
-    """Extract valid image paths from agent output
+    """Extract valid image paths or URLs from agent output
     
     Args:
         text: Agent output text potentially containing image paths
         
     Returns:
-        List of valid image file paths
+        List of valid image file paths or URLs
     """
-    pattern = r'(/[^\s]+\.png)'
+    # Support multiple common image formats, both local paths and URLs
+    pattern = r'((?:/|https?://)[^\s]+\.(?:png|jpg|jpeg|webp))'
     matches = re.findall(pattern, text)
-    return [path for path in matches if os.path.exists(path)]
+    # Remove duplicates while preserving order
+    unique_matches = list(dict.fromkeys(matches))
+    
+    valid_paths = []
+    for path in unique_matches:
+        if path.startswith(("http://", "https://")):
+            valid_paths.append(path)
+        elif os.path.exists(path):
+            valid_paths.append(path)
+            
+    return valid_paths
+
+
+def parse_video_paths(text: str) -> list[str]:
+    """Extract valid video paths or URLs from agent output
+    
+    Args:
+        text: Agent output text potentially containing video paths
+        
+    Returns:
+        List of valid video file paths or URLs
+    """
+    # Support common video formats, both local paths and URLs
+    pattern = r'((?:/|https?://)[^\s]+\.(?:mp4|mov|avi|webm))'
+    matches = re.findall(pattern, text)
+    # Remove duplicates while preserving order
+    unique_matches = list(dict.fromkeys(matches))
+    
+    valid_paths = []
+    for path in unique_matches:
+        if path.startswith(("http://", "https://")):
+            valid_paths.append(path)
+        elif os.path.exists(path):
+            valid_paths.append(path)
+            
+    return valid_paths
 
 
 def pull_message_from_step(step_log: dict) -> Generator[ChatMessage, None, None]:
@@ -119,42 +155,44 @@ def stream_from_smolagent(
             for message in pull_message_from_step(step_log):
                 yield message
 
-    # Parse output for images
+    # Parse output for media
     image_paths = parse_image_paths(str(agent_output))
-
-    # Build final response
-    if image_paths:
-        # Check if output is just image paths or has additional text
-        output_text = str(agent_output).strip()
-        has_extra_text = len(output_text) > len(' '.join(image_paths))
-
-        if len(image_paths) == 1 and not has_extra_text:
-            # Single image, no extra text
-            yield ChatMessage(
-                role="assistant",
-                content={"path": image_paths[0], "mime_type": "image/png"}
-            )
-        else:
-            # Multiple images or images with text
-            if has_extra_text:
-                yield ChatMessage(
-                    role="assistant",
-                    metadata={"title": "✅ Final Answer"},
-                    content=output_text
-                )
-
-            # Yield each image
-            for img_path in image_paths:
-                yield ChatMessage(
-                    role="assistant",
-                    content={"path": img_path, "mime_type": "image/png"}
-                )
-    else:
-        # No images, just text
-        yield ChatMessage(
+    video_paths = parse_video_paths(str(agent_output))
+    
+    # Get the text content without the file paths (roughly)
+    output_text = str(agent_output).strip()
+    
+    # Yield text response if it's substantial or if there are no media files
+    if output_text and (not (image_paths or video_paths) or len(output_text) > 200):
+         yield ChatMessage(
             role="assistant",
             metadata={"title": "✅ Final Answer"},
-            content=str(agent_output)
+            content=output_text
+        )
+
+    # Yield images
+    for img_path in image_paths:
+        yield ChatMessage(
+            role="assistant",
+            content={"path": img_path, "mime_type": "image/png"}
+        )
+        
+    # Yield videos
+    for video_path in video_paths:
+        yield ChatMessage(
+            role="assistant",
+            content={"path": video_path, "mime_type": "video/mp4"}
+        )
+        
+    # Fallback if we have media but didn't yield text above, and the text is short/just the path
+    # We might want to show the text if it contains other info, but usually it's just "Generated image at ..."
+    # So we skip it if we showed media, unless it was long.
+    
+    if not (image_paths or video_paths) and not output_text:
+         yield ChatMessage(
+            role="assistant",
+            metadata={"title": "✅ Done"},
+            content="Task completed."
         )
 
     return None

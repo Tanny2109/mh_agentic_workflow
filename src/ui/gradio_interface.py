@@ -141,7 +141,7 @@ class GradioInterface:
 
             with gr.Row():
                 chat_input = gr.Textbox(
-                    placeholder="Describe the image you want to generate...",
+                    placeholder="Describe the content you want to generate...",
                     show_label=False,
                     scale=4
                 )
