@@ -6,7 +6,7 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from src.agents.smolagent import SmolagentFalApp
+from src.agents.smolagent_ref import SmolagentFalApp
 from config.settings import settings
 import gradio as gr
 

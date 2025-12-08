@@ -85,12 +85,12 @@ class FalImageGenerationTool(Tool):
         },
         "width": {
             "type": "integer",
-            "description": "Image width in pixels. Default: 720",
+            "description": "Image width in pixels. Infer this value based on aspect ratio. Default: 720",
             "nullable": True
         },
         "height": {
             "type": "integer",
-            "description": "Image height in pixels. Default: 720",
+            "description": "Image height in pixels. Infer this value based on aspect ratio. Default: 720",
             "nullable": True
         },
         "num_images": {
@@ -114,7 +114,7 @@ class FalImageGenerationTool(Tool):
     def forward(
         self,
         prompt: str,
-        model: str = "seedream4",
+        model: str = "flux-krea",
         width: int = 720,
         height: int = 720,
         num_images: int = 1,
@@ -135,7 +135,7 @@ class FalImageGenerationTool(Tool):
         """
         try:
             image_paths = []
-            if model == "flux-schnell" or model == "flux_krea" or model == "flux-krea":
+            if mode=="fast" or model == "flux-schnell" or model == "flux_krea" or model == "flux-krea":
                 job = {
                     "type": "inference.flux-fast.schnell.txt2img.v2",
                     "config": {
@@ -145,6 +145,15 @@ class FalImageGenerationTool(Tool):
                         "steps": 4
                     }
                 }
+                # Print debug info
+                debug_info = {
+                    "tool": "FalImageGenerationTool",
+                    "mode": mode,
+                }
+                print(f"\n{'='*80}")
+                print(f"DEBUG - Image Generation Tool Called:")
+                print(json.dumps(debug_info, indent=2))
+                print(f"{'='*80}\n")
                 st = time()
                 res = session.post(prodia_url, headers=headers, json=job)
                 et = time()
@@ -268,7 +277,7 @@ class FalVideoGenerationTool(Tool):
         try:
             # Get model from config
             # model_id = self.models[model]
-            model_id = "fal-ai/bytedance/seedance/v1/lite/text-to-video"
+            model_id = "fal-ai/bytedance/seedance/v1/pro/fast/text-to-video"
 
             args = {
                 "prompt": prompt,
